@@ -16,11 +16,14 @@ class Machine
     "IFE", "IFN", "IFG", "IFB"
   ]
 
-  NON_BASIC_OPCODES: [null, "JSR"]
+  EXTENDED_OPCODES: [null, "JSR", "BRK"]
 
-  constructor: (program)->
-    @memory = (data for data in program)
-    print(@memory)
+  constructor: (@program, @verbose=false)->
+    @reset()
+
+  reset: ->
+    @memory = (data for data in @program)
+    @exited = false
 
     @register =
       A: 0
@@ -35,6 +38,23 @@ class Machine
       SP: 0
       O: 0
 
+  decompile: ->
+    @decompiling = true
+    @instructions = []
+    while @register.PC < @memory.length
+      @step()
+
+    code = ""
+    for [op, a, b] in @instructions
+      i = "#{op} #{a.repr}"
+      i += ", #{b.repr}" if b
+      code += i + "\n"
+
+    delete @decompiling
+    delete @instructions
+    code
+
+
 
   nextWord: ->
     @register.PC += 1
@@ -46,7 +66,7 @@ class Machine
     op = @getOp(instruction & 0x0f)
 
     if op is "$OP"
-      op = @NON_BASIC_OPCODES[(instruction >> 4) & 0x3f]
+      op = @EXTENDED_OPCODES[(instruction >> 4) & 0x3f]
       a = @getValue (instruction >> 10) & 0x3f
       b = undefined
     else
@@ -59,14 +79,20 @@ class Machine
 
 
   exec: (op, args...) ->
+    if @decompiling 
+      @instructions.push [op, args...]
+      return
+
     if @skipNext
       @skipNext = false
       return
     if op? 
-      console.log op, (a.repr for a in args when a?).join(', ')
+      if @verbose
+        console.log op, (a.repr for a in args when a?).join(', ')
       @[op].call(this,args...)
     else
-      console.log '~SKIP~', op, (a.repr for a in args when a?).join(', ')
+      if @verbose
+        console.log '~SKIP~', op, (a.repr for a in args when a?).join(', ')
 
 
   pop: ->
@@ -80,7 +106,6 @@ class Machine
   push: (val) ->
     @register.SP = (@register.SP - 1) & 0xffff
     @memory[@register.SP] = val & 0xffff
-    console.log '+++++ PUSH', @memory[@register.SP], @register.SP
 
   getOp: (number) ->
     @OPCODES[number]
@@ -121,7 +146,7 @@ class Machine
       when raw is 0x19
         value = @peek()
         get = => value
-        set = => #crash
+        set = (val) => @memory[@register.SP] = val & 0xff
         repr = "PEEK"
 
       # PUSH
@@ -185,6 +210,9 @@ class Machine
     @push(@register.PC )
     @register.PC = a.get()
     # JSR
+
+  BRK: (a)->
+    @exited = a.get()
 
   SET: (a, b) ->
     a.set(b.get())
@@ -257,7 +285,7 @@ class Machine
     unless a.get() > b.get()
       @skipNext = true
 
-  IFG: (a, b) ->
+  IFB: (a, b) ->
     unless (a.get() & b.get()) isnt 0
       @skipNext = true
 
@@ -279,6 +307,7 @@ class Assembler
     IFG: 0x0e
     IFB: 0x0f
     JSR: 0x10
+    BRK: 0x20
 
   REGISTERS:
     A: 0x00
@@ -301,7 +330,8 @@ class Assembler
     @instructions = []
     @labels = {}
     @read()
-    console.lg
+    console.log @instructions
+    console.log @labels
     @compile()
     #console.log @
 
@@ -311,8 +341,8 @@ class Assembler
     # split code into multiple lines
     lines = @code.split(/\n+/)
 
-    for line in lines
-      line = @cleanLine line
+    for rawLine in lines
+      line = @cleanLine rawLine
       continue unless line.length
       tokens = @split line
 
@@ -320,7 +350,11 @@ class Assembler
       args = []
 
       for token in tokens
-        if @isLabel(token)
+        if token.toUpperCase() is 'DAT'
+          op = 'DAT'
+          args = @readData(rawLine)
+          break
+        else if @isLabel(token)
           # Store label with instruction number
           label = token[1...]
           if label of @labels
@@ -328,7 +362,7 @@ class Assembler
           else
             @labels[token[1...]] = @instructions.length
         else if @isOp(token) and not op
-          op = token
+          op = token.toUpperCase()
         else if op
           args.push token
         else
@@ -337,13 +371,75 @@ class Assembler
       if op
         @instructions.push [op, args...]
 
+  readData: (line) ->
+    result = line.match(/[\s^](dat)\s/i)
+    after = line.substr(result.index + result[0].length, line.length)
+
+    values = []
+
+    token = ''
+    inquotes = false
+    slashLength = 0
+
+    for char, i in after
+      if char is '\\' 
+        slashLength += 1
+      else if char isnt '"'
+        slashLength = 0
+
+      if inquotes
+        if char is '"' and  slashLength % 2 is 0
+          inquotes = false
+          continue
+        if char is '\\' and slashLength and slashLength % 2 is 1
+          continue
+        else
+          token += char
+
+      else # out of quotes
+        if char is '"' #start quote
+          if tokenIsString
+            # If we have already entered a string during this token, throw
+            throw "Unnexpected token \""
+          inquotes = true
+          tokenIsString = true
+          continue
+        if char is ',' or char is ' ' or char is '\t' #end value
+          if token
+            if tokenIsString
+              for char in token
+                values.push char.charCodeAt()
+            else
+              # If we haven't quoted, parse value to number
+              token = parseInt(token) unless tokenIsString
+              if isNaN(token)
+                throw "Cannot parse token #{token}"
+              values.push(token)
+
+            # Reset token info
+            token = ''
+            tokenIsString = false
+          continue
+        if char is ';' # ; comment, nothing left to do
+          values.push token if token
+          break
+        else # literal charachter, append to token
+          token += char
+
+    if inquotes
+      throw 'Mismatched quotes'
+    values
+
   # Convert instruction list to binary program
   compile: ->
     instructionMap = {}
     labelFixes = []
     @program = []
     for [op, args...],i in @instructions
-      instructionMap[i] = @program.length
+      instructionMap[i] = @program.length 
+      if op is 'DAT'
+        @program.push(args...)
+        continue
       word = 0
       word |= @OPS[op]
       next = []
@@ -368,7 +464,7 @@ class Assembler
             @crash 'Bad iteral in ' + op + args
 
           # Value code is 0x10 - 0x17, based on register
-          code = (@REGISTERS[register] + 0x10)
+          code = (@REGISTERS[register.toUpperCase()] + 0x10)
 
           # Apply value to word
           word |= (code << shift)
@@ -378,15 +474,15 @@ class Assembler
           continue
 
         # POP PEEK PUSH SP PC 0
-        if arg of @REGISTERS and @REGISTERS[arg] > 0x07
-          code = @REGISTERS[arg]
+        if arg of @REGISTERS and @REGISTERS[arg.toUpperCase()] > 0x07
+          code = @REGISTERS[arg.toUpperCase()]
           word |= (code << shift)
           continue
 
         #  register and [register]
-        if arg of @REGISTERS  and @REGISTERS[arg] <= 0x07
+        if arg of @REGISTERS  and @REGISTERS[arg.toUpperCase()] <= 0x07
           # Grab value of named register
-          code = @REGISTERS[arg]
+          code = @REGISTERS[arg.toUpperCase()]
 
           # If this is a pointer, increase value by 0x08
           code += 0x08 if pointer
@@ -459,7 +555,7 @@ class Assembler
 
   # Is an OP
   isOp: (token) -> 
-    token of @OPS
+    token.toUpperCase() of @OPS
 
 
   crash: (message = 'Unknown Error') -> throw message
@@ -490,34 +586,40 @@ CODE =
   """
 
   ;basic stuff
-                SET A, 0x30              ; 7c01 0030
-                SET [0x1000], 0x20       ; 7de1 1000 0020
-                SUB A, [0x1000]          ; 7803 1000
-                IFN A, 0x10              ; c00d 
-                   SET PC, crash         ; 7dc1 001a [*]
+                set a, 0x30              ; 7c01 0030
+                set [0x1000], 0x20       ; 7de1 1000 0020
+                sub a, [0x1000]          ; 7803 1000
+                ifn a, 0x10              ; c00d 
+                   set pc, crash         ; 7dc1 001a [*]
 
-  ; Do a loopy thing
-                SET I, 10                ; a861
-                SET A, 0x2000            ; 7c01 2000
-  :loop         SET [0x2000+I], [A]      ; 2161 2000
-                SUB I, 1                 ; 8463
-                IFN I, 0                 ; 806d
-                   SET PC, loop          ; 7dc1 000d [*]
+  ; do a loopy thing
+                set i, 10                ; a861
+                set a, 0x2000            ; 7c01 2000
+  :loop         set [0x2000+i], [a]      ; 2161 2000
+                sub i, 1                 ; 8463
+                ifn i, 0                 ; 806d
+                   set pc, loop          ; 7dc1 000d [*]
 
-  ; Call a subroutine
-                SET X, 0x4               ; 9031
-                JSR testsub              ; 7c10 0018 [*]
-                SET PC, crash            ; 7dc1 001a [*]
+  ; call a subroutine
+                set x, 0x4               ; 9031
+                jsr testsub              ; 7c10 0018 [*]
+                set pc, crash            ; 7dc1 001a [*]
 
-  :testsub      SHL X, 4                 ; 9037
-                SET PC, POP              ; 61c1
+  :testsub      shl x, 4                 ; 9037
+                set pc, pop              ; 61c1
                   
-  ; Hang forever. X should now be 0x40 if everything went right.
-  :crash        SET PC, crash            ; 7dc1 001a [*]
+  ; hang forever. x should now be 0x40 if everything went right.
+  :crash        set pc, crash            ; 7dc1 001a [*]
 
-  ; [*]: Note that these can be one word shorter and one cycle faster by using the short form (0x00-0x1f) of literals,
+  :dat       dat 0xdead, "h;el\\\\\\\\\\"lo", 0xdead 100 ;annoying comment
+
+  ; [*]: note that these can be one word shorter and one cycle faster by using the short form (0x00-0x1f) of literals,
   ;      but my assembler doesn't support short form labels yet.
   """
+
+
+CODE = """
+"""
 
 dump = (machine) ->
   console.log (" #{x}  " for x in "ABCXYZIJ".split('')).join('|') + "| PC | SP | O"
@@ -525,11 +627,22 @@ dump = (machine) ->
 assemble = (code) ->
   (new Assembler code).program
 
+module?.exports = {
+  Assembler
+  Machine
+  assemble
+  hex
+  print
+  dump
+}
+
 if require.main is module
   #new Assembler CODE
   rl = require('readline').createInterface process.stdin, process.stdout
 
-  machine = new Machine(assemble(CODE))
+  machine = new Machine(assemble(CODE), true)
+  #machine.decompile()
+  dump(machine)
   rl.on 'line', ->
     machine.step()
     print(machine.memory)
