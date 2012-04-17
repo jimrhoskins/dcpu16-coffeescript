@@ -1,0 +1,20 @@
+{
+  "author": "",
+  "name": "dcpu16",
+  "description": "DCPU16 Assembler and VM",
+  "version": "0.0.0",
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/jimrhoskins/dcpu16-coffeescript.git"
+  },
+  "engines": {
+    "node": "~0.6.10"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "coffee-script": "*",
+    "should": "*",
+    "mocha": "*"
+  },
+  "optionalDependencies": {}
+}

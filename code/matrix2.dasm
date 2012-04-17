@@ -1,0 +1,326 @@
+SET PC, Init
+
+:Seed DAT 0x1234
+
+:WIDTH DAT 32;32
+:HEIGHT DAT 12; 12
+
+:CELL_COUNT DAT 384; 384
+;SCREEN DAT 0x8000
+
+:NSPINNERS DAT 2
+:NGLYPHS DAT 0x26
+:NGLYPHS1 DAT 0x25
+:CHAR_MAP 
+ DAT 32
+:CHAR_MAP1
+ DAT 48,49,50,51,52,53,54,55,56,57,64
+ DAT 97,98,99,100,101,102,103,104,105
+ DAT 106,107,108,109,110,111,112,113
+ DAT 114,115,116,117,118,119,120,121
+ DAT 122
+:DENSITY
+ DAT 3
+
+;Feeders 0x7000
+;Cells   0x6000
+
+:Init
+ JSR InitSpinners
+ SET I, 0x7000 ;Feeders
+ SET J, I
+ ADD J, [WIDTH]
+ :InitLoop
+  SET [I], 0
+  ADD I, 1
+  IFN I, J
+   SET PC, InitLoop
+ 
+:MainLoop
+ ; generate
+ SET I, 0
+ :GenLoop
+ SET J, I
+ Add J, 0x7000
+ SET Z, [J]
+ SHR Z, 4
+ AND Z, 0xF
+ IFN Z, 0
+  SET PC, GenCase1
+ SET X, [J]
+ AND X, 0xF
+ SET Y, [J]
+ SHR Y, 8
+ IFG X, 0
+  SET PC, GenCase2
+ SET A, 0
+ SET B, I
+ SET C, Y
+ SET PUSH, I
+ JSR InsertGlyph
+ SET I, POP
+ SET X, [J]
+ AND X, 0xF
+ SET Y, [J]
+ SHR Y, 8
+ IFE Y, 0xF
+  SET PC, GenDone
+ ADD Y, 1
+ AND [J], 0xFF
+ SHL Y, 8
+ BOR [J], Y
+ SET PC, GenDone
+ :GenCase1
+ SUB Z, 1
+ SHL Z, 4
+ AND [J], 0xF0F
+ BOR [J], Z
+ SET PC, GenDone
+ :GenCase2
+ JSR Rnd
+ MOD A, [NGLYPHS]
+ SET B, I
+ SET C, Y
+ SET PUSH, I
+ JSR InsertGlyph
+ SET I, POP
+ SET X, [J]
+ AND X, 0xF
+ SET Y, [J]
+ SHR Y, 8
+ AND [J], 0xFF0
+ SUB X, 1
+ BOR [J], X
+ IFE Y, 0xF
+  SET PC, GenDone
+ ADD Y, 1
+ AND [J], 0xFF
+ SHL Y, 8
+ BOR [J], Y
+ :GenDone
+ JSR Rnd
+ MOD A, 10
+ IFN A, 0
+  SET PC, GenInc
+ JSR Rnd
+ MOD A, 5
+ SET B, A
+ JSR Rnd
+ MOD A, 5
+ ADD A, B
+ AND [J], 0xF0F
+ SHL A, 4
+ BOR [J], A
+ :GenInc
+ ADD I, 1
+ IFN I, [WIDTH]
+  SET PC, GenLoop
+ ; mutate
+ SET I, 0
+ :MLoop
+ SET X, I
+ ADD X, 0x7000
+ SET Y, [X]
+ SET A, Y
+ AND A, 0xFF
+ IFG A, 0
+  SET PC, MInc
+ JSR Rnd
+ MOD A, [DENSITY]
+ IFN A, 0
+  SET PC, MInc
+ JSR Rnd
+ MOD A, [HEIGHT]
+ ADD A, 3
+ SET [X], A
+ JSR Rnd
+ MOD A, 5
+ SET B, A
+ JSR Rnd
+ MOD A, 5
+ ADD A, B
+ SHL A, 4
+ BOR [X], A
+ JSR Rnd
+ MOD A, 4
+ IFN A, 0
+  AND [X], 0xF0
+ JSR Rnd
+ MOD A, 2
+ IFE A, 0
+  SET PC, MStream
+ SET A, [HEIGHT]
+ SHR A, 1
+ SET B, A
+ JSR Rnd
+ MOD A, B
+ SHL A, 8
+ BOR [X], A
+ SET PC, MInc
+ :MStream
+ BOR [X], 0xF00
+ :MInc
+ ADD I, 1
+ IFN I, [WIDTH]
+  SET PC, MLoop
+ JSR Rnd
+ MOD A, 500
+ IFE A, 0
+  JSR InitSpinners
+ ; draw
+ SET I, 0
+ :DrawLoop
+  SET X, I
+  MUL X, 2
+  ADD X, 0x6000 ; Cells
+  SET Y, X
+  ADD Y, 1
+  SET A, [Y]
+  AND A, 1
+  IFE A, 0
+   SET PC, DrawInc
+  SET B, [X]
+  SET C, B
+  AND B, 0xFF
+  SHR C, 8
+  IFE C, 0
+   SET PC, DrawBlank
+  SET J, 0x5000
+  IFN B, 0
+   SET J, 0x8000
+  IFB [Y], 2
+   SET J, 0x8000
+  SET Z, C
+  ADD Z, CHAR_MAP
+  SET Z, [Z]
+  BOR J, Z
+  SET Z, 0x8000
+  ADD Z, I
+  SET [Z], J
+  SET PC, DrawDone
+  :DrawBlank
+  SET Z, 0x8000
+  ADD Z, I
+  SET [Z], 0
+  :DrawDone
+  AND [Y], 2
+  IFE B, 0
+   SET PC, DrawSkipGlow
+  SUB B, 1
+  BOR [Y], 1
+  AND [X], 0xFF00
+  ADD [X], B
+  :DrawSkipGlow
+  IFG 2, [Y]
+   SET PC, DrawInc
+  JSR Rnd
+  MOD A, [NGLYPHS1]
+  ADD A, 1
+  SHL A, 8
+  AND [X], 0xFF
+  BOR [X], A
+  BOR [Y], 1
+ :DrawInc
+  ADD I, 1
+  IFN I, [CELL_COUNT]
+   SET PC, DrawLoop
+ SET PC, MainLoop
+ 
+:Rnd
+ SET A, [Seed]
+ MUL A, 0x7C4D
+ ADD A, 0x3619
+ SET [Seed], A
+ SET PC, POP
+
+:InitSpinners
+ SET C, 0x6000 ; Cells
+ SET I, C
+ SET X, [CELL_COUNT]
+ MUL X, 2
+ ADD X, C
+ :ISLoop1
+ SET [I], 0
+ ADD I, 1
+ SET [I], 0
+ ADD I, 1
+ IFN I, X
+  SET PC, ISLoop1
+ SET I, 0
+ SET PC, ISLoopTest
+ :ISLoop2
+ JSR Rnd
+ MOD A, [WIDTH]
+ SET B, A
+ JSR Rnd
+ MOD A, [HEIGHT]
+ MUL A, [WIDTH]
+ ADD B, A
+ MUL B, 2
+ ADD B, 1
+ ADD B, C
+ BOR [B], 2
+ ADD I, 1
+ :ISLoopTest
+ IFN I, [NSPINNERS]
+  SET PC, ISLoop2
+ SET PC, POP
+ 
+:InsertGlyph ; A = glyph, B = x, C = y
+ SET Z, 1
+ IFE C, 0xF
+  SET Z, 0
+ IFE Z, 0
+  SET C, 0
+ SET Y, [HEIGHT]
+ ADD Y, 1
+ IFG C, Y
+  SET PC, POP
+ IFE Z, 1
+  SET PC, IGSimple
+ SET I, [HEIGHT]
+ SUB I, 1
+ :IGLoop
+ SET Y, I
+ MUL Y, [WIDTH]
+ ADD Y, B
+ MUL Y, 2
+ ADD Y, 0x6000 ; Cells
+ SET X, Y
+ SUB X, [WIDTH]
+ SUB X, [WIDTH]
+ SET [Y], [X]
+ SET X, Y
+ ADD X, 1
+ BOR [X], 1
+ SUB I, 1
+ IFN I, 0
+  SET PC, IGLoop
+ SET Y, B
+ MUL Y, 2
+ ADD Y, 0x6000 ; Cells
+ SET PC, IGFinal
+ :IGSimple
+ SET Y, [WIDTH]
+ MUL Y, C
+ ADD Y, B
+ MUL Y, 2
+ ADD Y, 0x6000 ; Cells
+ :IGFinal
+ SHL A, 8
+ AND [Y], 0xFF
+ BOR [Y], A
+ SET X, Y
+ ADD X, 1
+ BOR [X], 1
+ IFE A, 0
+  SET PC, POP
+ AND [Y], 0xFF00
+ IFE Z, 0
+  SET PC, POP
+ JSR Rnd
+ MOD A, 2
+ ADD A, 1
+ BOR [Y], A
+ SET PC, POP
+
