@@ -386,12 +386,15 @@ class Assembler
         @instructions.push [op, args...]
 
   readData: (line) ->
-    result = line.match(/[\s^](dat)\s/i)
+    result = line.match(/(\s|^)(dat)\s/i)
+    console.log result
+    console.log JSON.stringify line
     after = line.substr(result.index + result[0].length, line.length)
 
     values = []
 
     token = ''
+    
     inquotes = false
     slashLength = 0
 
